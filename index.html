@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>生物Ⅱ 期末対策クイズ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#0b0f14; color:#e8eef7; }
+    header { padding:16px; border-bottom:1px solid #333; background:#111826; position:sticky; top:0; }
+    h1 { margin:0 0 10px; font-size:18px; }
+    select, button {
+      padding:8px 12px; margin-right:6px; background:#1b2435; color:#fff;
+      border:1px solid #444; border-radius:8px; cursor:pointer;
+    }
+    button.secondary { background:#172033; }
+    button.danger { background:#3d0f1a; border-color:#6b2331; }
+    button.ok { background:#0f3d2e; border-color:#1f6b53; }
+    main { max-width: 980px; margin: 0 auto; padding: 20px; }
+    .card { background:#121923; padding:20px; border-radius:12px; border:1px solid #333; }
+    .choice { display:block; width:100%; margin:8px 0; padding:10px; text-align:left; }
+    .result { margin-top:16px; padding:12px; border-radius:8px; display:none; }
+    .good { background:#0f3d2e; }
+    .bad { background:#3d0f1a; }
+    .meta { margin-top:10px; font-size:13px; color:#aaa; white-space:pre-wrap; }
+    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .modalBackdrop{
+      position:fixed; inset:0; background:rgba(0,0,0,.55);
+      display:none; align-items:center; justify-content:center; padding:18px;
+    }
+    .modal{
+      width:min(920px, 100%); max-height: 85vh; overflow:auto;
+      background:#121923; border:1px solid #333; border-radius:14px; padding:16px;
+    }
+    .modal h2{ margin:0 0 10px; font-size:16px; }
+    .listItem{
+      border:1px solid #2a3448; border-radius:12px; padding:10px; margin:8px 0;
+      display:flex; gap:10px; align-items:flex-start; justify-content:space-between;
+    }
+    .listItem .left{ flex:1; }
+    .small{ font-size:12px; color:#aab; }
+    .pill{ display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid #2a3448; color:#aab; }
+    code { background:#0b0f14; padding:2px 6px; border-radius:6px; border:1px solid #2a3448; }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>生物Ⅱ 期末対策クイズ</h1>
+
+  <div class="row">
+    <select id="lectureFilter">
+      <option value="all">全講義</option>
+      <option value="1">第1講</option><option value="2">第2講</option><option value="3">第3講</option>
+      <option value="4">第4講</option><option value="5">第5講</option><option value="6">第6講</option>
+      <option value="7">第7講</option><option value="8">第8講</option><option value="9">第9講</option>
+      <option value="10">第10講</option><option value="11">第11講</option><option value="12">第12講</option>
+      <option value="13">第13講</option>
+    </select>
+
+    <button id="btnStart">ランダム開始</button>
+    <button id="btnWrong" class="secondary">間違い復習</button>
+    <button id="btnWrongList" class="secondary">間違い一覧</button>
+    <button id="btnWrongReset" class="danger">間違いリセット</button>
+  </div>
+
+  <div class="meta" id="topStats"></div>
+</header>
+
+<main>
+  <div class="card">
+    <h2 id="question">開始を押してください</h2>
+    <div id="choices"></div>
+
+    <div class="result" id="resultBox">
+      <div id="resultText"></div>
+      <div class="meta" id="explanation"></div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btnToggleWrong" class="secondary">この問題を「間違い」にする</button>
+        <button id="btnNext" class="ok">次へ</button>
+      </div>
+    </div>
+
+    <div class="meta" id="status"></div>
+
+    <div class="meta" style="margin-top:14px;">
+      起動（Mac）: <code>python3 -m http.server 8000</code> → <code>http://localhost:8000</code>
+    </div>
+  </div>
+</main>
+
+<!-- 間違い一覧モーダル -->
+<div class="modalBackdrop" id="modalBg">
+  <div class="modal">
+    <div class="row" style="justify-content:space-between;">
+      <h2>間違い一覧</h2>
+      <button id="btnCloseModal" class="secondary">閉じる</button>
+    </div>
+
+    <div class="row" style="margin:10px 0;">
+      <span class="pill" id="wrongCountPill">0 件</span>
+      <button id="btnExportWrong" class="secondary">IDをコピー</button>
+    </div>
+
+    <div class="meta" style="margin:8px 0;">
+      ・一覧の「表示」で問題をプレビューできます  
+      ・「解除」で間違いリストから外せます
+    </div>
+
+    <div id="wrongList"></div>
+  </div>
+</div>
+
+<script type="module">
+  import { QUESTIONS } from "./all_questions.js";
+
+  const lectureFilter = document.getElementById("lectureFilter");
+  const btnStart = document.getElementById("btnStart");
+  const btnWrong = document.getElementById("btnWrong");
+  const btnWrongList = document.getElementById("btnWrongList");
+  const btnWrongReset = document.getElementById("btnWrongReset");
+
+  const questionEl = document.getElementById("question");
+  const choicesEl = document.getElementById("choices");
+  const resultBox = document.getElementById("resultBox");
+  const resultText = document.getElementById("resultText");
+  const explanationEl = document.getElementById("explanation");
+  const btnNext = document.getElementById("btnNext");
+  const btnToggleWrong = document.getElementById("btnToggleWrong");
+
+  const statusEl = document.getElementById("status");
+  const topStats = document.getElementById("topStats");
+
+  const modalBg = document.getElementById("modalBg");
+  const btnCloseModal = document.getElementById("btnCloseModal");
+  const wrongListEl = document.getElementById("wrongList");
+  const wrongCountPill = document.getElementById("wrongCountPill");
+  const btnExportWrong = document.getElementById("btnExportWrong");
+
+  // storage
+  const KEY_WRONG = "bio2_wrongs"; // array of ids
+  let wrongs = JSON.parse(localStorage.getItem(KEY_WRONG) || "[]");
+
+  // quiz state
+  let pool = [];
+  let index = 0;
+  let lastAnswered = false;
+
+  function saveWrongs() {
+    localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
+    renderTopStats();
+  }
+
+  function renderTopStats() {
+    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}`;
+  }
+
+  function shuffle(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function getFilteredQuestions() {
+    const lec = lectureFilter.value;
+    if (lec === "all") return QUESTIONS;
+    return QUESTIONS.filter(q => String(q.lecture) === String(lec));
+  }
+
+  function start(mode) {
+    let filtered = getFilteredQuestions();
+
+    if (mode === "wrong") {
+      filtered = filtered.filter(q => wrongs.includes(q.id));
+    }
+
+    pool = shuffle(filtered);
+    index = 0;
+    lastAnswered = false;
+    show();
+  }
+
+  function show() {
+    resultBox.style.display = "none";
+    lastAnswered = false;
+
+    if (!pool.length) {
+      questionEl.textContent = "問題がありません（フィルタ/間違いが0件）";
+      choicesEl.innerHTML = "";
+      statusEl.textContent = "";
+      return;
+    }
+
+    if (index >= pool.length) {
+      questionEl.textContent = "終了！";
+      choicesEl.innerHTML = "";
+      statusEl.textContent = "";
+      return;
+    }
+
+    const q = pool[index];
+    questionEl.textContent = `（第${q.lecture}講） ${q.question}`;
+    choicesEl.innerHTML = "";
+
+    q.choices.forEach((c, i) => {
+      const b = document.createElement("button");
+      b.className = "choice";
+      b.textContent = `${i + 1}. ${c}`;
+      b.onclick = () => answer(i);
+      choicesEl.appendChild(b);
+    });
+
+    statusEl.textContent = `進捗 ${index + 1} / ${pool.length}`;
+  }
+
+  function setToggleWrongButton(q) {
+    const isWrong = wrongs.includes(q.id);
+    btnToggleWrong.textContent = isWrong ? "この問題を「間違い」から解除" : "この問題を「間違い」にする";
+    btnToggleWrong.className = isWrong ? "danger" : "secondary";
+    btnToggleWrong.onclick = () => {
+      toggleWrong(q.id);
+      // ボタン表示更新
+      setToggleWrongButton(q);
+    };
+  }
+
+  function toggleWrong(id) {
+    if (wrongs.includes(id)) {
+      wrongs = wrongs.filter(x => x !== id);
+    } else {
+      wrongs.push(id);
+    }
+    saveWrongs();
+  }
+
+  function answer(i) {
+    const q = pool[index];
+    const correct = i === q.answer;
+
+    lastAnswered = true;
+    resultBox.style.display = "block";
+    resultBox.className = "result " + (correct ? "good" : "bad");
+
+    resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
+    explanationEl.textContent = `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+
+    // 自動で「間違い」に入れる仕様は維持（ただし手動で解除可能）
+    if (!correct && !wrongs.includes(q.id)) {
+      wrongs.push(q.id);
+      saveWrongs();
+    }
+
+    setToggleWrongButton(q);
+  }
+
+  btnNext.onclick = () => {
+    index++;
+    show();
+  };
+
+  btnStart.onclick = () => start("random");
+  btnWrong.onclick = () => start("wrong");
+
+  btnWrongReset.onclick = () => {
+    wrongs = [];
+    saveWrongs();
+    alert("間違いリストをリセットしました。");
+  };
+
+  // ---- 間違い一覧（モーダル） ----
+  function openWrongList() {
+    modalBg.style.display = "flex";
+    renderWrongList();
+  }
+  function closeWrongList() {
+    modalBg.style.display = "none";
+  }
+
+  function renderWrongList() {
+    const lec = lectureFilter.value;
+    const filteredBank = getFilteredQuestions();
+    const wrongQuestions = filteredBank.filter(q => wrongs.includes(q.id));
+
+    wrongCountPill.textContent = `${wrongQuestions.length} 件`;
+
+    wrongListEl.innerHTML = "";
+    if (!wrongQuestions.length) {
+      wrongListEl.innerHTML = `<div class="meta">間違いがありません（またはフィルタで0件）</div>`;
+      return;
+    }
+
+    wrongQuestions
+      .sort((a,b) => (a.lecture - b.lecture) || String(a.id).localeCompare(String(b.id)))
+      .forEach(q => {
+        const item = document.createElement("div");
+        item.className = "listItem";
+
+        const left = document.createElement("div");
+        left.className = "left";
+        left.innerHTML = `
+          <div><span class="pill">第${q.lecture}講</span> <span class="pill">ID: ${q.id}</span></div>
+          <div style="margin-top:6px;">${escapeHtml(q.question)}</div>
+          <div class="small" style="margin-top:6px;">正解：${q.answer + 1}. ${escapeHtml(q.choices[q.answer])}</div>
+        `;
+
+        const right = document.createElement("div");
+        right.className = "row";
+
+        const btnPreview = document.createElement("button");
+        btnPreview.className = "secondary";
+        btnPreview.textContent = "表示";
+        btnPreview.onclick = () => {
+          // その問題を現在画面で見れるようにする（プレビュー）
+          pool = [q];
+          index = 0;
+          show();
+          // すぐ答え表示（結果欄に解説も）
+          resultBox.style.display = "block";
+          resultBox.className = "result";
+          resultText.textContent = "（プレビュー）";
+          explanationEl.textContent = `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+          setToggleWrongButton(q);
+          closeWrongList();
+        };
+
+        const btnRemove = document.createElement("button");
+        btnRemove.className = "danger";
+        btnRemove.textContent = "解除";
+        btnRemove.onclick = () => {
+          wrongs = wrongs.filter(x => x !== q.id);
+          saveWrongs();
+          renderWrongList();
+        };
+
+        right.appendChild(btnPreview);
+        right.appendChild(btnRemove);
+
+        item.appendChild(left);
+        item.appendChild(right);
+        wrongListEl.appendChild(item);
+      });
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  btnWrongList.onclick = openWrongList;
+  btnCloseModal.onclick = closeWrongList;
+  modalBg.addEventListener("click", (e) => {
+    if (e.target === modalBg) closeWrongList();
+  });
+
+  btnExportWrong.onclick = async () => {
+    const lec = lectureFilter.value;
+    const filteredBank = getFilteredQuestions();
+    const wrongQuestions = filteredBank.filter(q => wrongs.includes(q.id));
+    const text = wrongQuestions.map(q => q.id).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      alert("間違いIDをコピーしました！");
+    } catch {
+      alert("コピー失敗…（ブラウザ権限の都合）\n下の一覧から手動でコピペしてね");
+    }
+  };
+
+  // init
+  renderTopStats();
+</script>
+</body>
+</html>
