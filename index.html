@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#0b0f14; color:#e8eef7; }
-    header { padding:16px; border-bottom:1px solid #333; background:#111826; position:sticky; top:0; }
+    header { padding:16px; border-bottom:1px solid #333; background:#111826; position:sticky; top:0; z-index:10; }
     h1 { margin:0 0 10px; font-size:18px; }
     select, button {
       padding:8px 12px; margin-right:6px; background:#1b2435; color:#fff;
@@ -26,6 +26,7 @@
     .modalBackdrop{
       position:fixed; inset:0; background:rgba(0,0,0,.55);
       display:none; align-items:center; justify-content:center; padding:18px;
+      z-index: 50;
     }
     .modal{
       width:min(920px, 100%); max-height: 85vh; overflow:auto;
@@ -40,6 +41,7 @@
     .small{ font-size:12px; color:#aab; }
     .pill{ display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid #2a3448; color:#aab; }
     code { background:#0b0f14; padding:2px 6px; border-radius:6px; border:1px solid #2a3448; }
+    .spacer { flex: 1; }
   </style>
 </head>
 
@@ -61,6 +63,13 @@
     <button id="btnWrong" class="secondary">間違い復習</button>
     <button id="btnWrongList" class="secondary">間違い一覧</button>
     <button id="btnWrongReset" class="danger">間違いリセット</button>
+
+    <span class="spacer"></span>
+
+    <!-- ★ログインUI（追加） -->
+    <button id="btnLogin" class="secondary">Googleでログイン</button>
+    <button id="btnLogout" class="secondary" style="display:none;">ログアウト</button>
+    <span class="pill" id="userLabel" style="display:none;"></span>
   </div>
 
   <div class="meta" id="topStats"></div>
@@ -84,7 +93,7 @@
     <div class="meta" id="status"></div>
 
     <div class="meta" style="margin-top:14px;">
-      起動（Mac）: <code>python3 -m http.server 8000</code> → <code>http://localhost:8000</code>
+      起動（ローカル確認用）: <code>python3 -m http.server 8000</code> → <code>http://localhost:8000</code>
     </div>
   </div>
 </main>
@@ -114,6 +123,16 @@
 <script type="module">
   import { QUESTIONS } from "./all_questions.js";
 
+  // ★Firebase Auth / Firestore 連携（追加）
+  import {
+    watchAuthState,
+    loginWithGoogle,
+    logout,
+    loadWrongs,
+    saveWrongs
+  } from "./firebase-auth.js";
+
+  // ---- DOM ----
   const lectureFilter = document.getElementById("lectureFilter");
   const btnStart = document.getElementById("btnStart");
   const btnWrong = document.getElementById("btnWrong");
@@ -127,7 +146,6 @@
   const explanationEl = document.getElementById("explanation");
   const btnNext = document.getElementById("btnNext");
   const btnToggleWrong = document.getElementById("btnToggleWrong");
-
   const statusEl = document.getElementById("status");
   const topStats = document.getElementById("topStats");
 
@@ -137,22 +155,26 @@
   const wrongCountPill = document.getElementById("wrongCountPill");
   const btnExportWrong = document.getElementById("btnExportWrong");
 
-  // storage
-  const KEY_WRONG = "bio2_wrongs"; // array of ids
+  // ★ログインUI
+  const btnLogin = document.getElementById("btnLogin");
+  const btnLogout = document.getElementById("btnLogout");
+  const userLabel = document.getElementById("userLabel");
+
+  // ---- storage ----
+  const KEY_WRONG = "bio2_wrongs"; // local fallback
   let wrongs = JSON.parse(localStorage.getItem(KEY_WRONG) || "[]");
 
-  // quiz state
+  // ★ユーザー状態（追加）
+  let currentUser = null;
+  let syncing = false; // ロード中にセーブしないため
+
+  // ---- quiz state ----
   let pool = [];
   let index = 0;
-  let lastAnswered = false;
-
-  function saveWrongs() {
-    localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
-    renderTopStats();
-  }
 
   function renderTopStats() {
-    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}`;
+    const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
+    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}`;
   }
 
   function shuffle(arr) {
@@ -179,13 +201,11 @@
 
     pool = shuffle(filtered);
     index = 0;
-    lastAnswered = false;
     show();
   }
 
   function show() {
     resultBox.style.display = "none";
-    lastAnswered = false;
 
     if (!pool.length) {
       questionEl.textContent = "問題がありません（フィルタ/間違いが0件）";
@@ -222,7 +242,6 @@
     btnToggleWrong.className = isWrong ? "danger" : "secondary";
     btnToggleWrong.onclick = () => {
       toggleWrong(q.id);
-      // ボタン表示更新
       setToggleWrongButton(q);
     };
   }
@@ -233,24 +252,24 @@
     } else {
       wrongs.push(id);
     }
-    saveWrongs();
+    saveWrongsUniversal();
   }
 
   function answer(i) {
     const q = pool[index];
     const correct = i === q.answer;
 
-    lastAnswered = true;
     resultBox.style.display = "block";
     resultBox.className = "result " + (correct ? "good" : "bad");
 
     resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
-    explanationEl.textContent = `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+    explanationEl.textContent =
+      `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
 
-    // 自動で「間違い」に入れる仕様は維持（ただし手動で解除可能）
+    // 自動で「間違い」入り（後で手動解除できる）
     if (!correct && !wrongs.includes(q.id)) {
       wrongs.push(q.id);
-      saveWrongs();
+      saveWrongsUniversal();
     }
 
     setToggleWrongButton(q);
@@ -266,7 +285,7 @@
 
   btnWrongReset.onclick = () => {
     wrongs = [];
-    saveWrongs();
+    saveWrongsUniversal();
     alert("間違いリストをリセットしました。");
   };
 
@@ -279,14 +298,22 @@
     modalBg.style.display = "none";
   }
 
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
   function renderWrongList() {
-    const lec = lectureFilter.value;
     const filteredBank = getFilteredQuestions();
     const wrongQuestions = filteredBank.filter(q => wrongs.includes(q.id));
 
     wrongCountPill.textContent = `${wrongQuestions.length} 件`;
-
     wrongListEl.innerHTML = "";
+
     if (!wrongQuestions.length) {
       wrongListEl.innerHTML = `<div class="meta">間違いがありません（またはフィルタで0件）</div>`;
       return;
@@ -301,7 +328,7 @@
         const left = document.createElement("div");
         left.className = "left";
         left.innerHTML = `
-          <div><span class="pill">第${q.lecture}講</span> <span class="pill">ID: ${q.id}</span></div>
+          <div><span class="pill">第${q.lecture}講</span> <span class="pill">ID: ${escapeHtml(q.id)}</span></div>
           <div style="margin-top:6px;">${escapeHtml(q.question)}</div>
           <div class="small" style="margin-top:6px;">正解：${q.answer + 1}. ${escapeHtml(q.choices[q.answer])}</div>
         `;
@@ -313,15 +340,18 @@
         btnPreview.className = "secondary";
         btnPreview.textContent = "表示";
         btnPreview.onclick = () => {
-          // その問題を現在画面で見れるようにする（プレビュー）
+          // プレビュー表示：その問題だけ表示
           pool = [q];
           index = 0;
           show();
-          // すぐ答え表示（結果欄に解説も）
+
+          // 結果欄に解説を出す（答えボタン押さなくても見れる）
           resultBox.style.display = "block";
           resultBox.className = "result";
           resultText.textContent = "（プレビュー）";
-          explanationEl.textContent = `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+          explanationEl.textContent =
+            `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+
           setToggleWrongButton(q);
           closeWrongList();
         };
@@ -331,7 +361,7 @@
         btnRemove.textContent = "解除";
         btnRemove.onclick = () => {
           wrongs = wrongs.filter(x => x !== q.id);
-          saveWrongs();
+          saveWrongsUniversal();
           renderWrongList();
         };
 
@@ -344,15 +374,6 @@
       });
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
-
   btnWrongList.onclick = openWrongList;
   btnCloseModal.onclick = closeWrongList;
   modalBg.addEventListener("click", (e) => {
@@ -360,7 +381,6 @@
   });
 
   btnExportWrong.onclick = async () => {
-    const lec = lectureFilter.value;
     const filteredBank = getFilteredQuestions();
     const wrongQuestions = filteredBank.filter(q => wrongs.includes(q.id));
     const text = wrongQuestions.map(q => q.id).join("\n");
@@ -368,12 +388,78 @@
       await navigator.clipboard.writeText(text);
       alert("間違いIDをコピーしました！");
     } catch {
-      alert("コピー失敗…（ブラウザ権限の都合）\n下の一覧から手動でコピペしてね");
+      alert("コピー失敗…（ブラウザ権限の都合）\n一覧から手動でコピペしてね");
     }
   };
 
+  // ---- ★保存：未ログインなら端末、ログイン中ならFirestoreにも ----
+  async function saveWrongsUniversal() {
+    // 端末にも保存（オフライン保険）
+    localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
+
+    // ログイン中はクラウド保存
+    if (currentUser && !syncing) {
+      try {
+        await saveWrongs(currentUser.uid, wrongs);
+      } catch (e) {
+        console.warn("クラウド保存失敗（端末には保存済み）", e);
+      }
+    }
+
+    renderTopStats();
+  }
+
+  // ---- ★ログイン処理（追加） ----
+  btnLogin.onclick = async () => {
+    try {
+      await loginWithGoogle();
+    } catch (e) {
+      alert("ログイン失敗: " + (e?.message || e));
+    }
+  };
+
+  btnLogout.onclick = async () => {
+    try {
+      await logout();
+    } catch (e) {
+      alert("ログアウト失敗: " + (e?.message || e));
+    }
+  };
+
+  watchAuthState(async (user) => {
+    currentUser = user;
+
+    if (!user) {
+      // 未ログイン：localStorageのまま
+      btnLogin.style.display = "";
+      btnLogout.style.display = "none";
+      userLabel.style.display = "none";
+      renderTopStats();
+      return;
+    }
+
+    // ログイン：クラウドから wrongs を取得して上書き
+    btnLogin.style.display = "none";
+    btnLogout.style.display = "";
+    userLabel.style.display = "";
+    userLabel.textContent = user.displayName || user.email || "ログイン中";
+
+    try {
+      syncing = true;
+      const cloudWrongs = await loadWrongs(user.uid);
+      wrongs = Array.isArray(cloudWrongs) ? cloudWrongs : [];
+      localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs)); // 端末にもミラー
+      renderTopStats();
+      // モーダル開いてたら更新
+      if (modalBg.style.display === "flex") renderWrongList();
+    } finally {
+      syncing = false;
+    }
+  });
+
   // init
   renderTopStats();
+  console.log("QUESTIONS loaded:", QUESTIONS?.length);
 </script>
 </body>
 </html>
