@@ -262,7 +262,21 @@
     if (mode === "study_lock") {
       text = "📘 勉強：解説を読んで「理解した」を押すまで次へ進めません（定着用）";
     } else if (mode === "two_choice") {
-      text = "⚡ 二択：『正しい/誤り』の2択でテンポ良く回せます（判断力）";
+  // 強制二択モード
+  const isCorrectStatement = true; 
+  // 「最も正しい」を問う問題なので、正解選択肢＝正しい
+
+  return {
+    baseQ,
+    questionText: `（第${baseQ.lecture}講）【二択】次の記述は正しいか？\n\n${baseQ.question}`,
+    choices: ["正しい", "誤り"],
+    answerIndex: 0, // 正しい が正解
+    explanationText:
+      `この問題の正解は「${baseQ.choices[baseQ.answer]}」です。\n\n解説：${baseQ.explanation || ""}`,
+    modeUsed: "two_choice"
+  };
+}
+
     } else if (mode === "term_desc") {
       text = "🧠 単語→説明：選択肢を『説明文』に変換して出題（説明を覚える用）※説明が短い問題は自動で通常に戻します";
     } else {
