@@ -42,15 +42,14 @@
     .small{ font-size:12px; color:#aab; }
     .pill{ display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid #2a3448; color:#aab; }
     .spacer { flex: 1; }
-    .toggle {
-      display:inline-flex; align-items:center; gap:8px;
-      background:#172033; border:1px solid #444; border-radius:999px;
-      padding:6px 10px;
-    }
-    .toggle input { transform: scale(1.15); }
     .hint { color:#aab; font-size:12px; margin-top:6px; }
     .numSelectWrap { display:inline-flex; align-items:center; gap:6px; }
     .numSelectWrap select { min-width: 86px; }
+
+    .modeWrap { display:inline-flex; align-items:center; gap:6px; }
+    .modeWrap select { min-width: 190px; }
+
+    .kbd { font-size:12px; border:1px solid #2a3448; padding:2px 6px; border-radius:6px; color:#aab; }
   </style>
 </head>
 
@@ -68,7 +67,6 @@
       <option value="13">第13講</option>
     </select>
 
-    <!-- ★問題数選択（追加） -->
     <span class="numSelectWrap">
       <span class="pill">出題数</span>
       <select id="countSelect" title="1回の出題数（フィルタ後の問題数より多い場合は自動で最大にします）">
@@ -84,15 +82,21 @@
       </select>
     </span>
 
-    <button id="btnStart">ランダム開始</button>
+    <!-- ★学習モード（追加） -->
+    <span class="modeWrap">
+      <span class="pill">モード</span>
+      <select id="modeSelect" title="勉強方法を切り替え">
+        <option value="normal" selected>通常（4択）</option>
+        <option value="study_lock">📘 勉強：理解した押すまで進めない</option>
+        <option value="two_choice">⚡ 二択：正しい / 誤り</option>
+        <option value="term_desc">🧠 単語 → 説明（4択）</option>
+      </select>
+    </span>
+
+    <button id="btnStart">開始</button>
     <button id="btnWrong" class="secondary">間違い復習</button>
     <button id="btnWrongList" class="secondary">間違い一覧</button>
     <button id="btnWrongReset" class="danger">間違いリセット</button>
-
-    <label class="toggle" title="解説を読んでから次へ進む勉強用モード">
-      <input type="checkbox" id="studyModeToggle" />
-      <span>📘 勉強モード</span>
-    </label>
 
     <span class="spacer"></span>
 
@@ -102,9 +106,7 @@
   </div>
 
   <div class="meta" id="topStats"></div>
-  <div class="hint" id="studyHint" style="display:none;">
-    勉強モード：解説を読んで「理解した」を押すまで次へ進めません（定着用）
-  </div>
+  <div class="hint" id="modeHint" style="display:none;"></div>
 </header>
 
 <main>
@@ -120,7 +122,7 @@
         <button id="btnToggleWrong" class="secondary">この問題を「間違い」にする</button>
 
         <button id="btnUnderstood" class="secondary" style="display:none;">
-          ✅ 解説を読んだ（理解した）
+          ✅ 理解した（次へ）
         </button>
 
         <button id="btnNext" class="ok">次へ</button>
@@ -166,6 +168,8 @@
   // ---- DOM ----
   const lectureFilter = document.getElementById("lectureFilter");
   const countSelect = document.getElementById("countSelect");
+  const modeSelect = document.getElementById("modeSelect");
+  const modeHint = document.getElementById("modeHint");
 
   const btnStart = document.getElementById("btnStart");
   const btnWrong = document.getElementById("btnWrong");
@@ -193,46 +197,30 @@
   const btnLogout = document.getElementById("btnLogout");
   const userLabel = document.getElementById("userLabel");
 
-  const studyModeToggle = document.getElementById("studyModeToggle");
-  const studyHint = document.getElementById("studyHint");
-
   // ---- storage ----
   const KEY_WRONG = "bio2_wrongs";
   const KEY_COUNT = "bio2_count_select";
-  const KEY_STUDY = "bio2_study_mode";
+  const KEY_MODE  = "bio2_mode_select";
 
   let wrongs = JSON.parse(localStorage.getItem(KEY_WRONG) || "[]");
 
-  // 出題数＆勉強モードは端末保存（ユーザー体験のため）
   const savedCount = localStorage.getItem(KEY_COUNT);
   if (savedCount) countSelect.value = savedCount;
 
-  const savedStudy = localStorage.getItem(KEY_STUDY);
-  if (savedStudy === "1") {
-    studyModeToggle.checked = true;
-  }
+  const savedMode = localStorage.getItem(KEY_MODE);
+  if (savedMode) modeSelect.value = savedMode;
 
   // ---- auth state ----
   let currentUser = null;
   let syncing = false;
 
-  // ---- mode ----
-  let studyMode = !!studyModeToggle.checked;
-
   // ---- quiz state ----
   let pool = [];
   let index = 0;
 
-  function renderTopStats() {
-    const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
-    const mode = studyMode ? ` / 📘勉強モード` : ``;
-
-    const filteredCount = getFilteredQuestions().length;
-    const selected = getSelectedCount(filteredCount);
-    const countText = selected === filteredCount ? `全部（${filteredCount}）` : `${selected}/${filteredCount}`;
-
-    topStats.textContent = `出題数 ${countText} / 総問題 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${mode}`;
-  }
+  // ---- current rendered (mode may transform) ----
+  let currentView = null;
+  // currentView = { baseQ, questionText, choices[], answerIndex, explanationText }
 
   function shuffle(arr) {
     const a = [...arr];
@@ -253,18 +241,155 @@
     const v = countSelect.value;
     if (v === "all") return maxAvailable;
     const n = parseInt(v, 10);
-    if (!Number.isFinite(n) || n <= 0) return maxAvailable; // 変な値なら全部
+    if (!Number.isFinite(n) || n <= 0) return maxAvailable;
     return Math.min(n, maxAvailable);
   }
 
-  function start(mode) {
-    let filtered = getFilteredQuestions();
+  function normalizeText(s) {
+    return String(s || "").replace(/\s+/g, " ").trim();
+  }
 
-    if (mode === "wrong") {
-      filtered = filtered.filter(q => wrongs.includes(q.id));
+  function pickRandomDistinct(arr, k, excludeSet) {
+    const candidates = arr.filter(x => !excludeSet.has(x));
+    const shuffled = shuffle(candidates);
+    return shuffled.slice(0, Math.min(k, shuffled.length));
+  }
+
+  // ---- Mode hints ----
+  function updateModeHint() {
+    const mode = modeSelect.value;
+    let text = "";
+    if (mode === "study_lock") {
+      text = "📘 勉強：解説を読んで「理解した」を押すまで次へ進めません（定着用）";
+    } else if (mode === "two_choice") {
+      text = "⚡ 二択：『正しい/誤り』の2択でテンポ良く回せます（判断力）";
+    } else if (mode === "term_desc") {
+      text = "🧠 単語→説明：選択肢を『説明文』に変換して出題（説明を覚える用）※説明が短い問題は自動で通常に戻します";
+    } else {
+      text = "";
+    }
+    modeHint.style.display = text ? "" : "none";
+    modeHint.textContent = text;
+  }
+
+  // ---- Build a view depending on mode ----
+  function buildView(baseQ, mode) {
+    const exp = normalizeText(baseQ.explanation);
+
+    // safety: base question
+    const baseView = {
+      baseQ,
+      questionText: `（第${baseQ.lecture}講） ${baseQ.question}`,
+      choices: baseQ.choices,
+      answerIndex: baseQ.answer,
+      explanationText: `正解：${baseQ.answer + 1}. ${baseQ.choices[baseQ.answer]}\n\n解説：${baseQ.explanation || ""}`,
+      modeUsed: "normal"
+    };
+
+    if (mode === "two_choice") {
+      // Use original wording; choices become correct/incorrect (2択)
+      // Determine correct by original answer: if choices contain "正しい/誤り" style, still fine.
+      // We simply ask "この記述は？" and map original correct choice to correct label:
+      // If original choices are 4, we can't know which corresponds to "正しい/誤り".
+      // So we transform ONLY when the original choices are exactly 2 and include 正しい/誤り or similar.
+      // Otherwise, we create 2択 by asking "この記述は最も正しい？" etc is not possible.
+      // -> Safer: if original has exactly 2 choices, we keep; else we derive from question type using keywords.
+      const qText = normalizeText(baseQ.question);
+      const looksBinary =
+        qText.includes("正しい") || qText.includes("誤って") || qText.includes("誤り") ||
+        baseQ.choices.some(c => normalizeText(c).includes("正しい")) ||
+        baseQ.choices.some(c => normalizeText(c).includes("誤り") || normalizeText(c).includes("誤って"));
+
+      if (!looksBinary) return baseView;
+
+      // Create 2 choices: 正しい / 誤り
+      // We need the truth value. If the question asks "最も正しい/最も誤っている", it's not a statement truth test.
+      // So we only do 2択 when it is clearly a statement judgement question (choices are already "正しい/誤り" OR question says choose correct/incorrect for a statement).
+      const alreadyTwo = baseQ.choices.length === 2;
+      const alreadyBinaryChoices =
+        alreadyTwo &&
+        (normalizeText(baseQ.choices[0]).includes("正") || normalizeText(baseQ.choices[0]).includes("はい") || normalizeText(baseQ.choices[0]).includes("Yes") ) &&
+        (normalizeText(baseQ.choices[1]).includes("誤") || normalizeText(baseQ.choices[1]).includes("いいえ") || normalizeText(baseQ.choices[1]).includes("No") );
+
+      if (!alreadyTwo && (qText.includes("最も正しい") || qText.includes("最も誤っている"))) {
+        // This is a multi-choice selection type; don't force 2択
+        return baseView;
+      }
+
+      if (alreadyTwo) {
+        return {
+          ...baseView,
+          choices: baseQ.choices,
+          answerIndex: baseQ.answer,
+          modeUsed: "two_choice"
+        };
+      }
+
+      // fallback: map answerIndex 0 as "正しい" 1 as "誤り" not reliable -> don't do it
+      return baseView;
     }
 
-    // ★出題数を反映（フィルタ後の件数に合わせて安全に切る）
+    if (mode === "term_desc") {
+      // Need meaningful explanation to use as "definition"
+      if (exp.length < 15) return baseView;
+
+      // Term: use correct choice text as "term"
+      const term = normalizeText(baseQ.choices[baseQ.answer]);
+      if (!term || term.length < 2) return baseView;
+
+      // Make 4 options = explanations from other questions' explanations
+      const bank = getFilteredQuestions();
+
+      // create distractor explanations
+      const exclude = new Set([baseQ.id]);
+      const distractorQs = pickRandomDistinct(bank, 20, exclude) // pick more then filter for long explanation
+        .filter(q => normalizeText(q.explanation).length >= 15)
+        .slice(0, 3);
+
+      if (distractorQs.length < 3) return baseView;
+
+      const correctDef = exp;
+      const distractDefs = distractorQs.map(q => normalizeText(q.explanation));
+
+      const choices = shuffle([correctDef, ...distractDefs]);
+
+      const answerIndex = choices.indexOf(correctDef);
+
+      return {
+        baseQ,
+        questionText: `（第${baseQ.lecture}講）【単語→説明】「${term}」の説明として最も適切なのはどれ？`,
+        choices,
+        answerIndex,
+        explanationText:
+          `正解：${answerIndex + 1}\n\n正しい説明：${correctDef}\n\n（元の問題）${baseQ.question}\n（元の正解）${baseQ.answer + 1}. ${term}`,
+        modeUsed: "term_desc"
+      };
+    }
+
+    // normal / study_lock: view is same as base, but navigation is locked later
+    return baseView;
+  }
+
+  function renderTopStats() {
+    const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
+    const mode = modeSelect.value;
+
+    const filteredCount = getFilteredQuestions().length;
+    const selected = getSelectedCount(filteredCount);
+    const countText = selected === filteredCount ? `全部（${filteredCount}）` : `${selected}/${filteredCount}`;
+
+    const modeLabel =
+      mode === "study_lock" ? " / 📘勉強(ロック)" :
+      mode === "two_choice" ? " / ⚡二択" :
+      mode === "term_desc" ? " / 🧠単語→説明" : "";
+
+    topStats.textContent = `出題数 ${countText} / 総問題 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${modeLabel}`;
+  }
+
+  function start(kind) {
+    let filtered = getFilteredQuestions();
+    if (kind === "wrong") filtered = filtered.filter(q => wrongs.includes(q.id));
+
     const pickedN = getSelectedCount(filtered.length);
     pool = shuffle(filtered).slice(0, pickedN);
 
@@ -281,21 +406,24 @@
       questionEl.textContent = "問題がありません（フィルタ/間違いが0件）";
       choicesEl.innerHTML = "";
       statusEl.textContent = "";
+      currentView = null;
       return;
     }
-
     if (index >= pool.length) {
       questionEl.textContent = "終了！";
       choicesEl.innerHTML = "";
       statusEl.textContent = "";
+      currentView = null;
       return;
     }
 
-    const q = pool[index];
-    questionEl.textContent = `（第${q.lecture}講） ${q.question}`;
+    const baseQ = pool[index];
+    currentView = buildView(baseQ, modeSelect.value);
+
+    questionEl.textContent = currentView.questionText;
     choicesEl.innerHTML = "";
 
-    q.choices.forEach((c, i) => {
+    currentView.choices.forEach((c, i) => {
       const b = document.createElement("button");
       b.className = "choice";
       b.textContent = `${i + 1}. ${c}`;
@@ -306,13 +434,13 @@
     statusEl.textContent = `進捗 ${index + 1} / ${pool.length}`;
   }
 
-  function setToggleWrongButton(q) {
-    const isWrong = wrongs.includes(q.id);
+  function setToggleWrongButton(baseQ) {
+    const isWrong = wrongs.includes(baseQ.id);
     btnToggleWrong.textContent = isWrong ? "この問題を「間違い」から解除" : "この問題を「間違い」にする";
     btnToggleWrong.className = isWrong ? "danger" : "secondary";
     btnToggleWrong.onclick = () => {
-      toggleWrong(q.id);
-      setToggleWrongButton(q);
+      toggleWrong(baseQ.id);
+      setToggleWrongButton(baseQ);
     };
   }
 
@@ -323,29 +451,39 @@
   }
 
   function answer(i) {
-    const q = pool[index];
-    const correct = i === q.answer;
+    if (!currentView) return;
+
+    const baseQ = currentView.baseQ;
+    const correct = i === currentView.answerIndex;
 
     resultBox.style.display = "block";
     resultBox.className = "result " + (correct ? "good" : "bad");
 
-    if (studyMode) {
-      resultText.textContent = correct ? "✅ 正解（解説で確認して定着）" : "❌ ここが弱点（解説で修正）";
+    const mode = modeSelect.value;
+
+    // 表示テキスト
+    if (mode === "study_lock") {
+      resultText.textContent = correct ? "✅ 正解（解説で定着）" : "❌ ここが弱点（解説で修正）";
+    } else if (mode === "two_choice") {
+      resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
+    } else if (mode === "term_desc") {
+      resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
     } else {
       resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
     }
 
-    explanationEl.textContent =
-      `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
+    explanationEl.textContent = currentView.explanationText;
 
-    if (!correct && !wrongs.includes(q.id)) {
-      wrongs.push(q.id);
+    // 不正解は自動で「間違い」
+    if (!correct && !wrongs.includes(baseQ.id)) {
+      wrongs.push(baseQ.id);
       saveWrongsUniversal();
     }
 
-    setToggleWrongButton(q);
+    setToggleWrongButton(baseQ);
 
-    if (studyMode) {
+    // ★「理解した」ロックモード
+    if (mode === "study_lock") {
       btnNext.disabled = true;
       btnUnderstood.style.display = "";
       btnUnderstood.onclick = () => {
@@ -355,10 +493,7 @@
     }
   }
 
-  btnNext.onclick = () => {
-    index++;
-    show();
-  };
+  btnNext.onclick = () => { index++; show(); };
 
   btnStart.onclick = () => start("random");
   btnWrong.onclick = () => start("wrong");
@@ -369,14 +504,9 @@
     alert("間違いリストをリセットしました。");
   };
 
-  // ---- 間違い一覧（モーダル） ----
-  function openWrongList() {
-    modalBg.style.display = "flex";
-    renderWrongList();
-  }
-  function closeWrongList() {
-    modalBg.style.display = "none";
-  }
+  // ---- 間違い一覧 ----
+  function openWrongList() { modalBg.style.display = "flex"; renderWrongList(); }
+  function closeWrongList() { modalBg.style.display = "none"; }
 
   function escapeHtml(s) {
     return String(s)
@@ -424,6 +554,8 @@
           index = 0;
           show();
 
+          // プレビュー時は「結果表示だけ先に出す」も可能だけど、
+          // 既存の動きを壊さないようここでは説明を開いておく
           resultBox.style.display = "block";
           resultBox.className = "result";
           resultText.textContent = "（プレビュー）";
@@ -432,7 +564,8 @@
 
           setToggleWrongButton(q);
 
-          if (studyMode) {
+          // lock mode対応
+          if (modeSelect.value === "study_lock") {
             btnNext.disabled = true;
             btnUnderstood.style.display = "";
             btnUnderstood.onclick = () => {
@@ -467,74 +600,45 @@
 
   btnWrongList.onclick = openWrongList;
   btnCloseModal.onclick = closeWrongList;
-  modalBg.addEventListener("click", (e) => {
-    if (e.target === modalBg) closeWrongList();
-  });
+  modalBg.addEventListener("click", (e) => { if (e.target === modalBg) closeWrongList(); });
 
   btnExportWrong.onclick = async () => {
     const filteredBank = getFilteredQuestions();
     const wrongQuestions = filteredBank.filter(q => wrongs.includes(q.id));
     const text = wrongQuestions.map(q => q.id).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      alert("間違いIDをコピーしました！");
-    } catch {
-      alert("コピー失敗…（ブラウザ権限の都合）\n一覧から手動でコピペしてね");
-    }
+    try { await navigator.clipboard.writeText(text); alert("間違いIDをコピーしました！"); }
+    catch { alert("コピー失敗…\n一覧から手動でコピペしてね"); }
   };
 
-  // ---- 保存：未ログインなら端末、ログイン中ならFirestoreにも ----
+  // ---- 保存（ログイン中はクラウドも） ----
   async function saveWrongsUniversal() {
     localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
 
     if (currentUser && !syncing) {
-      try {
-        await saveWrongs(currentUser.uid, wrongs);
-      } catch (e) {
-        console.warn("クラウド保存失敗（端末には保存済み）", e);
-      }
+      try { await saveWrongs(currentUser.uid, wrongs); }
+      catch (e) { console.warn("クラウド保存失敗（端末には保存済み）", e); }
     }
-
     renderTopStats();
   }
 
-  // ---- 勉強モード切替 ----
-  studyModeToggle.onchange = () => {
-    studyMode = !!studyModeToggle.checked;
-    localStorage.setItem(KEY_STUDY, studyMode ? "1" : "0");
-    studyHint.style.display = studyMode ? "" : "none";
+  // ---- セレクト保存 ----
+  countSelect.onchange = () => { localStorage.setItem(KEY_COUNT, countSelect.value); renderTopStats(); };
+  modeSelect.onchange  = () => {
+    localStorage.setItem(KEY_MODE, modeSelect.value);
+    updateModeHint();
     renderTopStats();
-
-    if (resultBox.style.display === "block") {
-      btnNext.disabled = studyMode;
-      btnUnderstood.style.display = studyMode ? "" : "none";
-      if (studyMode) {
-        btnUnderstood.onclick = () => {
-          btnNext.disabled = false;
-          btnUnderstood.style.display = "none";
-        };
-      }
-    }
+    // 途中でモード変えた時の事故防止：今の問題は一旦リセット表示
+    resultBox.style.display = "none";
+    btnNext.disabled = false;
+    btnUnderstood.style.display = "none";
   };
+  lectureFilter.onchange = () => { renderTopStats(); if (modalBg.style.display === "flex") renderWrongList(); };
 
-  // ---- 出題数保存 ----
-  countSelect.onchange = () => {
-    localStorage.setItem(KEY_COUNT, countSelect.value);
-    renderTopStats();
-  };
-
-  // ---- フィルタ変更で表示更新 ----
-  lectureFilter.onchange = () => {
-    renderTopStats();
-    if (modalBg.style.display === "flex") renderWrongList();
-  };
-
-  // ---- ログイン処理 ----
+  // ---- ログイン ----
   btnLogin.onclick = async () => {
     try { await loginWithGoogle(); }
     catch (e) { alert("ログイン失敗: " + (e?.message || e)); }
   };
-
   btnLogout.onclick = async () => {
     try { await logout(); }
     catch (e) { alert("ログアウト失敗: " + (e?.message || e)); }
@@ -569,7 +673,7 @@
   });
 
   // init
-  studyHint.style.display = studyMode ? "" : "none";
+  updateModeHint();
   renderTopStats();
   console.log("QUESTIONS loaded:", QUESTIONS?.length);
 </script>
