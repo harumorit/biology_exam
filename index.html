@@ -45,11 +45,8 @@
     .hint { color:#aab; font-size:12px; margin-top:6px; }
     .numSelectWrap { display:inline-flex; align-items:center; gap:6px; }
     .numSelectWrap select { min-width: 86px; }
-
     .modeWrap { display:inline-flex; align-items:center; gap:6px; }
-    .modeWrap select { min-width: 190px; }
-
-    .kbd { font-size:12px; border:1px solid #2a3448; padding:2px 6px; border-radius:6px; color:#aab; }
+    .modeWrap select { min-width: 210px; }
   </style>
 </head>
 
@@ -82,13 +79,12 @@
       </select>
     </span>
 
-    <!-- ★学習モード（追加） -->
     <span class="modeWrap">
       <span class="pill">モード</span>
       <select id="modeSelect" title="勉強方法を切り替え">
         <option value="normal" selected>通常（4択）</option>
         <option value="study_lock">📘 勉強：理解した押すまで進めない</option>
-        <option value="two_choice">⚡ 二択：正しい / 誤り</option>
+        <option value="two_choice">⚡ 二択：正しい / 誤り（強制）</option>
         <option value="term_desc">🧠 単語 → 説明（4択）</option>
       </select>
     </span>
@@ -218,9 +214,8 @@
   let pool = [];
   let index = 0;
 
-  // ---- current rendered (mode may transform) ----
-  let currentView = null;
-  // currentView = { baseQ, questionText, choices[], answerIndex, explanationText }
+  // ---- current view (mode may transform) ----
+  let currentView = null; // { baseQ, questionText, choices[], answerIndex, explanationText, modeUsed }
 
   function shuffle(arr) {
     const a = [...arr];
@@ -250,35 +245,20 @@
   }
 
   function pickRandomDistinct(arr, k, excludeSet) {
-    const candidates = arr.filter(x => !excludeSet.has(x));
+    const candidates = arr.filter(x => !excludeSet.has(x.id));
     const shuffled = shuffle(candidates);
     return shuffled.slice(0, Math.min(k, shuffled.length));
   }
 
-  // ---- Mode hints ----
   function updateModeHint() {
     const mode = modeSelect.value;
     let text = "";
     if (mode === "study_lock") {
       text = "📘 勉強：解説を読んで「理解した」を押すまで次へ進めません（定着用）";
     } else if (mode === "two_choice") {
-  // 強制二択モード
-  const isCorrectStatement = true; 
-  // 「最も正しい」を問う問題なので、正解選択肢＝正しい
-
-  return {
-    baseQ,
-    questionText: `（第${baseQ.lecture}講）【二択】次の記述は正しいか？\n\n${baseQ.question}`,
-    choices: ["正しい", "誤り"],
-    answerIndex: 0, // 正しい が正解
-    explanationText:
-      `この問題の正解は「${baseQ.choices[baseQ.answer]}」です。\n\n解説：${baseQ.explanation || ""}`,
-    modeUsed: "two_choice"
-  };
-}
-
+      text = "⚡ 二択：必ず『正しい／誤り』の2択で回します（テンポ暗記用）";
     } else if (mode === "term_desc") {
-      text = "🧠 単語→説明：選択肢を『説明文』に変換して出題（説明を覚える用）※説明が短い問題は自動で通常に戻します";
+      text = "🧠 単語→説明：正解語に対応する説明を選ぶ（説明が短い問題は自動で通常に戻ります）";
     } else {
       text = "";
     }
@@ -286,11 +266,10 @@
     modeHint.textContent = text;
   }
 
-  // ---- Build a view depending on mode ----
+  // ✅ ここが一番大事：構文エラーが出ない形で固定済み
   function buildView(baseQ, mode) {
     const exp = normalizeText(baseQ.explanation);
 
-    // safety: base question
     const baseView = {
       baseQ,
       questionText: `（第${baseQ.lecture}講） ${baseQ.question}`,
@@ -300,63 +279,30 @@
       modeUsed: "normal"
     };
 
+    // ⚡ 強制二択（全問題）
     if (mode === "two_choice") {
-      // Use original wording; choices become correct/incorrect (2択)
-      // Determine correct by original answer: if choices contain "正しい/誤り" style, still fine.
-      // We simply ask "この記述は？" and map original correct choice to correct label:
-      // If original choices are 4, we can't know which corresponds to "正しい/誤り".
-      // So we transform ONLY when the original choices are exactly 2 and include 正しい/誤り or similar.
-      // Otherwise, we create 2択 by asking "この記述は最も正しい？" etc is not possible.
-      // -> Safer: if original has exactly 2 choices, we keep; else we derive from question type using keywords.
-      const qText = normalizeText(baseQ.question);
-      const looksBinary =
-        qText.includes("正しい") || qText.includes("誤って") || qText.includes("誤り") ||
-        baseQ.choices.some(c => normalizeText(c).includes("正しい")) ||
-        baseQ.choices.some(c => normalizeText(c).includes("誤り") || normalizeText(c).includes("誤って"));
-
-      if (!looksBinary) return baseView;
-
-      // Create 2 choices: 正しい / 誤り
-      // We need the truth value. If the question asks "最も正しい/最も誤っている", it's not a statement truth test.
-      // So we only do 2択 when it is clearly a statement judgement question (choices are already "正しい/誤り" OR question says choose correct/incorrect for a statement).
-      const alreadyTwo = baseQ.choices.length === 2;
-      const alreadyBinaryChoices =
-        alreadyTwo &&
-        (normalizeText(baseQ.choices[0]).includes("正") || normalizeText(baseQ.choices[0]).includes("はい") || normalizeText(baseQ.choices[0]).includes("Yes") ) &&
-        (normalizeText(baseQ.choices[1]).includes("誤") || normalizeText(baseQ.choices[1]).includes("いいえ") || normalizeText(baseQ.choices[1]).includes("No") );
-
-      if (!alreadyTwo && (qText.includes("最も正しい") || qText.includes("最も誤っている"))) {
-        // This is a multi-choice selection type; don't force 2択
-        return baseView;
-      }
-
-      if (alreadyTwo) {
-        return {
-          ...baseView,
-          choices: baseQ.choices,
-          answerIndex: baseQ.answer,
-          modeUsed: "two_choice"
-        };
-      }
-
-      // fallback: map answerIndex 0 as "正しい" 1 as "誤り" not reliable -> don't do it
-      return baseView;
+      return {
+        baseQ,
+        questionText: `（第${baseQ.lecture}講）【二択】次の問いに対して、あなたの選択は正しい？\n\n${baseQ.question}`,
+        choices: ["正しい", "誤り"],
+        answerIndex: 0,
+        explanationText:
+          `元の問題の正解：${baseQ.answer + 1}. ${baseQ.choices[baseQ.answer]}\n\n解説：${baseQ.explanation || ""}`,
+        modeUsed: "two_choice"
+      };
     }
 
+    // 🧠 単語→説明（説明が短い/無いなら通常へ）
     if (mode === "term_desc") {
-      // Need meaningful explanation to use as "definition"
       if (exp.length < 15) return baseView;
 
-      // Term: use correct choice text as "term"
       const term = normalizeText(baseQ.choices[baseQ.answer]);
       if (!term || term.length < 2) return baseView;
 
-      // Make 4 options = explanations from other questions' explanations
       const bank = getFilteredQuestions();
-
-      // create distractor explanations
       const exclude = new Set([baseQ.id]);
-      const distractorQs = pickRandomDistinct(bank, 20, exclude) // pick more then filter for long explanation
+
+      const distractorQs = pickRandomDistinct(bank, 30, exclude)
         .filter(q => normalizeText(q.explanation).length >= 15)
         .slice(0, 3);
 
@@ -366,7 +312,6 @@
       const distractDefs = distractorQs.map(q => normalizeText(q.explanation));
 
       const choices = shuffle([correctDef, ...distractDefs]);
-
       const answerIndex = choices.indexOf(correctDef);
 
       return {
@@ -380,22 +325,25 @@
       };
     }
 
-    // normal / study_lock: view is same as base, but navigation is locked later
+    // 📘 理解ロック（表示は通常と同じ。ロックは answer() で）
+    if (mode === "study_lock") {
+      return { ...baseView, modeUsed: "study_lock" };
+    }
+
     return baseView;
   }
 
   function renderTopStats() {
     const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
-    const mode = modeSelect.value;
-
     const filteredCount = getFilteredQuestions().length;
     const selected = getSelectedCount(filteredCount);
     const countText = selected === filteredCount ? `全部（${filteredCount}）` : `${selected}/${filteredCount}`;
 
+    const m = modeSelect.value;
     const modeLabel =
-      mode === "study_lock" ? " / 📘勉強(ロック)" :
-      mode === "two_choice" ? " / ⚡二択" :
-      mode === "term_desc" ? " / 🧠単語→説明" : "";
+      m === "study_lock" ? " / 📘勉強(ロック)" :
+      m === "two_choice" ? " / ⚡二択" :
+      m === "term_desc" ? " / 🧠単語→説明" : "";
 
     topStats.textContent = `出題数 ${countText} / 総問題 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${modeLabel}`;
   }
@@ -475,20 +423,14 @@
 
     const mode = modeSelect.value;
 
-    // 表示テキスト
     if (mode === "study_lock") {
       resultText.textContent = correct ? "✅ 正解（解説で定着）" : "❌ ここが弱点（解説で修正）";
-    } else if (mode === "two_choice") {
-      resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
-    } else if (mode === "term_desc") {
-      resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
     } else {
       resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
     }
 
     explanationEl.textContent = currentView.explanationText;
 
-    // 不正解は自動で「間違い」
     if (!correct && !wrongs.includes(baseQ.id)) {
       wrongs.push(baseQ.id);
       saveWrongsUniversal();
@@ -496,7 +438,7 @@
 
     setToggleWrongButton(baseQ);
 
-    // ★「理解した」ロックモード
+    // 📘理解ロック：理解した押すまで次へ不可
     if (mode === "study_lock") {
       btnNext.disabled = true;
       btnUnderstood.style.display = "";
@@ -568,17 +510,12 @@
           index = 0;
           show();
 
-          // プレビュー時は「結果表示だけ先に出す」も可能だけど、
-          // 既存の動きを壊さないようここでは説明を開いておく
           resultBox.style.display = "block";
           resultBox.className = "result";
           resultText.textContent = "（プレビュー）";
-          explanationEl.textContent =
-            `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
-
+          explanationEl.textContent = `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
           setToggleWrongButton(q);
 
-          // lock mode対応
           if (modeSelect.value === "study_lock") {
             btnNext.disabled = true;
             btnUnderstood.style.display = "";
@@ -641,7 +578,6 @@
     localStorage.setItem(KEY_MODE, modeSelect.value);
     updateModeHint();
     renderTopStats();
-    // 途中でモード変えた時の事故防止：今の問題は一旦リセット表示
     resultBox.style.display = "none";
     btnNext.disabled = false;
     btnUnderstood.style.display = "none";
