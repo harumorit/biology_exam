@@ -8,13 +8,14 @@
     body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#0b0f14; color:#e8eef7; }
     header { padding:16px; border-bottom:1px solid #333; background:#111826; position:sticky; top:0; z-index:10; }
     h1 { margin:0 0 10px; font-size:18px; }
-    select, button {
+    select, button, label {
       padding:8px 12px; margin-right:6px; background:#1b2435; color:#fff;
       border:1px solid #444; border-radius:8px; cursor:pointer;
     }
     button.secondary { background:#172033; }
     button.danger { background:#3d0f1a; border-color:#6b2331; }
     button.ok { background:#0f3d2e; border-color:#1f6b53; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
     main { max-width: 980px; margin: 0 auto; padding: 20px; }
     .card { background:#121923; padding:20px; border-radius:12px; border:1px solid #333; }
     .choice { display:block; width:100%; margin:8px 0; padding:10px; text-align:left; }
@@ -40,8 +41,14 @@
     .listItem .left{ flex:1; }
     .small{ font-size:12px; color:#aab; }
     .pill{ display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid #2a3448; color:#aab; }
-    code { background:#0b0f14; padding:2px 6px; border-radius:6px; border:1px solid #2a3448; }
     .spacer { flex: 1; }
+    .toggle {
+      display:inline-flex; align-items:center; gap:8px;
+      background:#172033; border:1px solid #444; border-radius:999px;
+      padding:6px 10px;
+    }
+    .toggle input { transform: scale(1.15); }
+    .hint { color:#aab; font-size:12px; margin-top:6px; }
   </style>
 </head>
 
@@ -64,15 +71,22 @@
     <button id="btnWrongList" class="secondary">間違い一覧</button>
     <button id="btnWrongReset" class="danger">間違いリセット</button>
 
+    <label class="toggle" title="解説を読んでから次へ進む勉強用モード">
+      <input type="checkbox" id="studyModeToggle" />
+      <span>📘 勉強モード</span>
+    </label>
+
     <span class="spacer"></span>
 
-    <!-- ★ログインUI（追加） -->
     <button id="btnLogin" class="secondary">Googleでログイン</button>
     <button id="btnLogout" class="secondary" style="display:none;">ログアウト</button>
     <span class="pill" id="userLabel" style="display:none;"></span>
   </div>
 
   <div class="meta" id="topStats"></div>
+  <div class="hint" id="studyHint" style="display:none;">
+    勉強モード：解説を読んで「理解した」を押すまで次へ進めません（定着用）
+  </div>
 </header>
 
 <main>
@@ -86,15 +100,16 @@
 
       <div class="row" style="margin-top:10px;">
         <button id="btnToggleWrong" class="secondary">この問題を「間違い」にする</button>
+
+        <button id="btnUnderstood" class="secondary" style="display:none;">
+          ✅ 解説を読んだ（理解した）
+        </button>
+
         <button id="btnNext" class="ok">次へ</button>
       </div>
     </div>
 
     <div class="meta" id="status"></div>
-
-    <div class="meta" style="margin-top:14px;">
-      起動（ローカル確認用）: <code>python3 -m http.server 8000</code> → <code>http://localhost:8000</code>
-    </div>
   </div>
 </main>
 
@@ -122,8 +137,6 @@
 
 <script type="module">
   import { QUESTIONS } from "./all_questions.js";
-
-  // ★Firebase Auth / Firestore 連携（追加）
   import {
     watchAuthState,
     loginWithGoogle,
@@ -146,6 +159,7 @@
   const explanationEl = document.getElementById("explanation");
   const btnNext = document.getElementById("btnNext");
   const btnToggleWrong = document.getElementById("btnToggleWrong");
+  const btnUnderstood = document.getElementById("btnUnderstood");
   const statusEl = document.getElementById("status");
   const topStats = document.getElementById("topStats");
 
@@ -155,18 +169,23 @@
   const wrongCountPill = document.getElementById("wrongCountPill");
   const btnExportWrong = document.getElementById("btnExportWrong");
 
-  // ★ログインUI
   const btnLogin = document.getElementById("btnLogin");
   const btnLogout = document.getElementById("btnLogout");
   const userLabel = document.getElementById("userLabel");
 
+  const studyModeToggle = document.getElementById("studyModeToggle");
+  const studyHint = document.getElementById("studyHint");
+
   // ---- storage ----
-  const KEY_WRONG = "bio2_wrongs"; // local fallback
+  const KEY_WRONG = "bio2_wrongs";
   let wrongs = JSON.parse(localStorage.getItem(KEY_WRONG) || "[]");
 
-  // ★ユーザー状態（追加）
+  // ---- auth state ----
   let currentUser = null;
-  let syncing = false; // ロード中にセーブしないため
+  let syncing = false;
+
+  // ---- mode ----
+  let studyMode = false;
 
   // ---- quiz state ----
   let pool = [];
@@ -174,7 +193,8 @@
 
   function renderTopStats() {
     const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
-    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}`;
+    const mode = studyMode ? ` / 📘勉強モード` : ``;
+    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${mode}`;
   }
 
   function shuffle(arr) {
@@ -194,10 +214,7 @@
 
   function start(mode) {
     let filtered = getFilteredQuestions();
-
-    if (mode === "wrong") {
-      filtered = filtered.filter(q => wrongs.includes(q.id));
-    }
+    if (mode === "wrong") filtered = filtered.filter(q => wrongs.includes(q.id));
 
     pool = shuffle(filtered);
     index = 0;
@@ -206,6 +223,8 @@
 
   function show() {
     resultBox.style.display = "none";
+    btnNext.disabled = false;
+    btnUnderstood.style.display = "none";
 
     if (!pool.length) {
       questionEl.textContent = "問題がありません（フィルタ/間違いが0件）";
@@ -247,11 +266,8 @@
   }
 
   function toggleWrong(id) {
-    if (wrongs.includes(id)) {
-      wrongs = wrongs.filter(x => x !== id);
-    } else {
-      wrongs.push(id);
-    }
+    if (wrongs.includes(id)) wrongs = wrongs.filter(x => x !== id);
+    else wrongs.push(id);
     saveWrongsUniversal();
   }
 
@@ -262,17 +278,33 @@
     resultBox.style.display = "block";
     resultBox.className = "result " + (correct ? "good" : "bad");
 
-    resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
+    // 勉強モード：点数感を弱めて「理解」を優先
+    if (studyMode) {
+      resultText.textContent = correct ? "✅ 正解（解説で確認して定着）" : "❌ ここが弱点（解説で修正）";
+    } else {
+      resultText.textContent = correct ? "✅ 正解！" : "❌ 不正解";
+    }
+
     explanationEl.textContent =
       `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
 
-    // 自動で「間違い」入り（後で手動解除できる）
+    // 不正解は自動で「間違い」入り（勉強効率のため残す）
     if (!correct && !wrongs.includes(q.id)) {
       wrongs.push(q.id);
       saveWrongsUniversal();
     }
 
     setToggleWrongButton(q);
+
+    // 勉強モード：解説を読んでから次へ
+    if (studyMode) {
+      btnNext.disabled = true;
+      btnUnderstood.style.display = "";
+      btnUnderstood.onclick = () => {
+        btnNext.disabled = false;
+        btnUnderstood.style.display = "none";
+      };
+    }
   }
 
   btnNext.onclick = () => {
@@ -340,12 +372,10 @@
         btnPreview.className = "secondary";
         btnPreview.textContent = "表示";
         btnPreview.onclick = () => {
-          // プレビュー表示：その問題だけ表示
           pool = [q];
           index = 0;
           show();
 
-          // 結果欄に解説を出す（答えボタン押さなくても見れる）
           resultBox.style.display = "block";
           resultBox.className = "result";
           resultText.textContent = "（プレビュー）";
@@ -353,6 +383,20 @@
             `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
 
           setToggleWrongButton(q);
+
+          // プレビューでも勉強モード制御
+          if (studyMode) {
+            btnNext.disabled = true;
+            btnUnderstood.style.display = "";
+            btnUnderstood.onclick = () => {
+              btnNext.disabled = false;
+              btnUnderstood.style.display = "none";
+            };
+          } else {
+            btnNext.disabled = false;
+            btnUnderstood.style.display = "none";
+          }
+
           closeWrongList();
         };
 
@@ -392,12 +436,10 @@
     }
   };
 
-  // ---- ★保存：未ログインなら端末、ログイン中ならFirestoreにも ----
+  // ---- 保存：未ログインなら端末、ログイン中ならFirestoreにも ----
   async function saveWrongsUniversal() {
-    // 端末にも保存（オフライン保険）
     localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
 
-    // ログイン中はクラウド保存
     if (currentUser && !syncing) {
       try {
         await saveWrongs(currentUser.uid, wrongs);
@@ -409,28 +451,40 @@
     renderTopStats();
   }
 
-  // ---- ★ログイン処理（追加） ----
-  btnLogin.onclick = async () => {
-    try {
-      await loginWithGoogle();
-    } catch (e) {
-      alert("ログイン失敗: " + (e?.message || e));
+  // ---- 勉強モード切替 ----
+  studyModeToggle.onchange = () => {
+    studyMode = !!studyModeToggle.checked;
+    studyHint.style.display = studyMode ? "" : "none";
+    renderTopStats();
+
+    // 途中で切替されたときの表示崩れを防ぐ
+    if (resultBox.style.display === "block") {
+      btnNext.disabled = studyMode;
+      btnUnderstood.style.display = studyMode ? "" : "none";
+      if (studyMode) {
+        btnUnderstood.onclick = () => {
+          btnNext.disabled = false;
+          btnUnderstood.style.display = "none";
+        };
+      }
     }
   };
 
+  // ---- ログイン処理 ----
+  btnLogin.onclick = async () => {
+    try { await loginWithGoogle(); }
+    catch (e) { alert("ログイン失敗: " + (e?.message || e)); }
+  };
+
   btnLogout.onclick = async () => {
-    try {
-      await logout();
-    } catch (e) {
-      alert("ログアウト失敗: " + (e?.message || e));
-    }
+    try { await logout(); }
+    catch (e) { alert("ログアウト失敗: " + (e?.message || e)); }
   };
 
   watchAuthState(async (user) => {
     currentUser = user;
 
     if (!user) {
-      // 未ログイン：localStorageのまま
       btnLogin.style.display = "";
       btnLogout.style.display = "none";
       userLabel.style.display = "none";
@@ -438,7 +492,6 @@
       return;
     }
 
-    // ログイン：クラウドから wrongs を取得して上書き
     btnLogin.style.display = "none";
     btnLogout.style.display = "";
     userLabel.style.display = "";
@@ -448,9 +501,8 @@
       syncing = true;
       const cloudWrongs = await loadWrongs(user.uid);
       wrongs = Array.isArray(cloudWrongs) ? cloudWrongs : [];
-      localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs)); // 端末にもミラー
+      localStorage.setItem(KEY_WRONG, JSON.stringify(wrongs));
       renderTopStats();
-      // モーダル開いてたら更新
       if (modalBg.style.display === "flex") renderWrongList();
     } finally {
       syncing = false;
