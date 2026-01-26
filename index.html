@@ -8,7 +8,7 @@
     body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:#0b0f14; color:#e8eef7; }
     header { padding:16px; border-bottom:1px solid #333; background:#111826; position:sticky; top:0; z-index:10; }
     h1 { margin:0 0 10px; font-size:18px; }
-    select, button, label, input {
+    select, button, label {
       padding:8px 12px; margin-right:6px; background:#1b2435; color:#fff;
       border:1px solid #444; border-radius:8px; cursor:pointer;
     }
@@ -49,8 +49,6 @@
     }
     .toggle input { transform: scale(1.15); }
     .hint { color:#aab; font-size:12px; margin-top:6px; }
-    .numSelectWrap { display:inline-flex; align-items:center; gap:6px; }
-    .numSelectWrap select { min-width: 86px; }
   </style>
 </head>
 
@@ -67,22 +65,6 @@
       <option value="10">第10講</option><option value="11">第11講</option><option value="12">第12講</option>
       <option value="13">第13講</option>
     </select>
-
-    <!-- ★問題数選択（追加） -->
-    <span class="numSelectWrap">
-      <span class="pill">出題数</span>
-      <select id="countSelect" title="1回の出題数（フィルタ後の問題数より多い場合は自動で最大にします）">
-        <option value="10">10</option>
-        <option value="20">20</option>
-        <option value="30">30</option>
-        <option value="50">50</option>
-        <option value="80">80</option>
-        <option value="100">100</option>
-        <option value="150">150</option>
-        <option value="200">200</option>
-        <option value="all" selected>全部</option>
-      </select>
-    </span>
 
     <button id="btnStart">ランダム開始</button>
     <button id="btnWrong" class="secondary">間違い復習</button>
@@ -165,8 +147,6 @@
 
   // ---- DOM ----
   const lectureFilter = document.getElementById("lectureFilter");
-  const countSelect = document.getElementById("countSelect");
-
   const btnStart = document.getElementById("btnStart");
   const btnWrong = document.getElementById("btnWrong");
   const btnWrongList = document.getElementById("btnWrongList");
@@ -198,26 +178,14 @@
 
   // ---- storage ----
   const KEY_WRONG = "bio2_wrongs";
-  const KEY_COUNT = "bio2_count_select";
-  const KEY_STUDY = "bio2_study_mode";
-
   let wrongs = JSON.parse(localStorage.getItem(KEY_WRONG) || "[]");
-
-  // 出題数＆勉強モードは端末保存（ユーザー体験のため）
-  const savedCount = localStorage.getItem(KEY_COUNT);
-  if (savedCount) countSelect.value = savedCount;
-
-  const savedStudy = localStorage.getItem(KEY_STUDY);
-  if (savedStudy === "1") {
-    studyModeToggle.checked = true;
-  }
 
   // ---- auth state ----
   let currentUser = null;
   let syncing = false;
 
   // ---- mode ----
-  let studyMode = !!studyModeToggle.checked;
+  let studyMode = false;
 
   // ---- quiz state ----
   let pool = [];
@@ -226,12 +194,7 @@
   function renderTopStats() {
     const who = currentUser ? ` / ログイン中` : ` / 未ログイン（端末保存）`;
     const mode = studyMode ? ` / 📘勉強モード` : ``;
-
-    const filteredCount = getFilteredQuestions().length;
-    const selected = getSelectedCount(filteredCount);
-    const countText = selected === filteredCount ? `全部（${filteredCount}）` : `${selected}/${filteredCount}`;
-
-    topStats.textContent = `出題数 ${countText} / 総問題 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${mode}`;
+    topStats.textContent = `問題数 ${QUESTIONS.length} / 間違い ${wrongs.length}${who}${mode}`;
   }
 
   function shuffle(arr) {
@@ -249,25 +212,11 @@
     return QUESTIONS.filter(q => String(q.lecture) === String(lec));
   }
 
-  function getSelectedCount(maxAvailable) {
-    const v = countSelect.value;
-    if (v === "all") return maxAvailable;
-    const n = parseInt(v, 10);
-    if (!Number.isFinite(n) || n <= 0) return maxAvailable; // 変な値なら全部
-    return Math.min(n, maxAvailable);
-  }
-
   function start(mode) {
     let filtered = getFilteredQuestions();
+    if (mode === "wrong") filtered = filtered.filter(q => wrongs.includes(q.id));
 
-    if (mode === "wrong") {
-      filtered = filtered.filter(q => wrongs.includes(q.id));
-    }
-
-    // ★出題数を反映（フィルタ後の件数に合わせて安全に切る）
-    const pickedN = getSelectedCount(filtered.length);
-    pool = shuffle(filtered).slice(0, pickedN);
-
+    pool = shuffle(filtered);
     index = 0;
     show();
   }
@@ -329,6 +278,7 @@
     resultBox.style.display = "block";
     resultBox.className = "result " + (correct ? "good" : "bad");
 
+    // 勉強モード：点数感を弱めて「理解」を優先
     if (studyMode) {
       resultText.textContent = correct ? "✅ 正解（解説で確認して定着）" : "❌ ここが弱点（解説で修正）";
     } else {
@@ -338,6 +288,7 @@
     explanationEl.textContent =
       `正解：${q.answer + 1}. ${q.choices[q.answer]}\n\n解説：${q.explanation || ""}`;
 
+    // 不正解は自動で「間違い」入り（勉強効率のため残す）
     if (!correct && !wrongs.includes(q.id)) {
       wrongs.push(q.id);
       saveWrongsUniversal();
@@ -345,6 +296,7 @@
 
     setToggleWrongButton(q);
 
+    // 勉強モード：解説を読んでから次へ
     if (studyMode) {
       btnNext.disabled = true;
       btnUnderstood.style.display = "";
@@ -432,6 +384,7 @@
 
           setToggleWrongButton(q);
 
+          // プレビューでも勉強モード制御
           if (studyMode) {
             btnNext.disabled = true;
             btnUnderstood.style.display = "";
@@ -501,10 +454,10 @@
   // ---- 勉強モード切替 ----
   studyModeToggle.onchange = () => {
     studyMode = !!studyModeToggle.checked;
-    localStorage.setItem(KEY_STUDY, studyMode ? "1" : "0");
     studyHint.style.display = studyMode ? "" : "none";
     renderTopStats();
 
+    // 途中で切替されたときの表示崩れを防ぐ
     if (resultBox.style.display === "block") {
       btnNext.disabled = studyMode;
       btnUnderstood.style.display = studyMode ? "" : "none";
@@ -515,18 +468,6 @@
         };
       }
     }
-  };
-
-  // ---- 出題数保存 ----
-  countSelect.onchange = () => {
-    localStorage.setItem(KEY_COUNT, countSelect.value);
-    renderTopStats();
-  };
-
-  // ---- フィルタ変更で表示更新 ----
-  lectureFilter.onchange = () => {
-    renderTopStats();
-    if (modalBg.style.display === "flex") renderWrongList();
   };
 
   // ---- ログイン処理 ----
@@ -569,7 +510,6 @@
   });
 
   // init
-  studyHint.style.display = studyMode ? "" : "none";
   renderTopStats();
   console.log("QUESTIONS loaded:", QUESTIONS?.length);
 </script>
